@@ -17,6 +17,21 @@
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
+	],
+	"d1_databases": [
+		{
+			"binding": "repairtrack_db",
+			"database_name": "repairtrack-db",
+			"database_id": "58508e65-ec98-4d51-90a0-f9e45a99c699",
+			"remote": true
+		}
+	],
+	"r2_buckets": [
+		{
+			"bucket_name": "repairtrack-media",
+			"binding": "repairtrack_media",
+			"remote": true
+		}
 	]
 	/**
 	 * Smart Placement
