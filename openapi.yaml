@@ -1,0 +1,368 @@
+openapi: 3.0.3
+info:
+  title: iFix RepairTrack API
+  version: "1.0.0"
+  description: |
+    Repair job tracking, warranty management and customer engagement for
+    iFix Express.
+
+    Authenticate via POST /api/auth/login, then send the JWT as an
+    Authorization Bearer header on every staff route.
+
+    Postman setup notes are in POSTMAN.md alongside this file.
+
+servers:
+  - url: https://api.ifixexpress.com.my
+    description: Production
+  - url: http://127.0.0.1:8787
+    description: Local (wrangler dev)
+
+tags:
+  - name: Public
+  - name: Auth
+  - name: Jobs
+  - name: Staff (admin)
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, example: Invalid credentials }
+        code: { type: string, example: UNAUTHORIZED }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+    JobStatus:
+      type: string
+      enum:
+        [received, diagnosing, awaiting_parts, in_progress, quality_check,
+         ready_for_collection, collected]
+  responses:
+    Unauthorized:
+      description: Missing/invalid token, or bad credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Wrong branch, or non-admin on an admin route
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Invalid input; see `fields`
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/health:
+    get:
+      tags: [Public]
+      summary: Health check
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /api/track/{jobId}:
+    get:
+      tags: [Public]
+      summary: Repair Card data (job, photos, timeline)
+      security: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, example: IFX-00001 }
+      responses:
+        "200": { description: Job detail }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/warranty/{jobId}:
+    get:
+      tags: [Public]
+      summary: Warranty status (not_started | active | expired | claimed)
+      security: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, example: IFX-00001 }
+      responses:
+        "200": { description: Warranty detail }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/reviews:
+    get:
+      tags: [Public]
+      summary: List reviews with aggregate stats
+      security: []
+      parameters:
+        - { name: branch_id, in: query, schema: { type: integer } }
+        - { name: stars, in: query, schema: { type: integer, minimum: 1, maximum: 5 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200": { description: Reviews + meta }
+    post:
+      tags: [Public]
+      summary: Submit or edit a review (one per job — upsert)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, stars]
+              properties:
+                job_id: { type: string, example: IFX-00001 }
+                stars: { type: integer, minimum: 1, maximum: 5, example: 5 }
+                comment: { type: string }
+                device_type: { type: string, example: Smartphone }
+      responses:
+        "201": { description: Created }
+        "200": { description: Edited existing review }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Staff login — returns a JWT valid 8 hours
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: repairtrack-admin@ifixexpress.com.my }
+                password: { type: string, format: password }
+      responses:
+        "200": { description: Token + staff profile }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current staff from token (session restore)
+      responses:
+        "200": { description: Staff context }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches:
+    get:
+      tags: [Jobs]
+      summary: Active branches
+      responses:
+        "200": { description: Branch list }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/jobs:
+    get:
+      tags: [Jobs]
+      summary: List jobs (branch-scoped unless admin)
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/JobStatus" } }
+        - { name: search, in: query, schema: { type: string }, description: "customer name, device model or job ID" }
+        - { name: branch_id, in: query, schema: { type: integer }, description: admin only }
+        - { name: limit, in: query, schema: { type: integer, default: 25, maximum: 100 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200": { description: Jobs + meta }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Jobs]
+      summary: Create a job (intake). Does NOT notify the customer.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [customer_name, customer_whatsapp, device_brand, device_model, issue_summary]
+              properties:
+                customer_name: { type: string, example: Aisyah Rahman }
+                customer_whatsapp: { type: string, example: "012-345 6789" }
+                device_brand: { type: string, example: Apple }
+                device_model: { type: string, example: iPhone 13 }
+                issue_summary: { type: string, example: Cracked screen }
+                technician_name: { type: string }
+                warranty_days: { type: integer, default: 30 }
+                estimated_completion_date: { type: string, format: date }
+                niagawan_invoice_url: { type: string }
+                photos:
+                  type: array
+                  maxItems: 3
+                  items: { type: string, format: binary }
+          application/json:
+            schema:
+              type: object
+              required: [customer_name, customer_whatsapp, device_brand, device_model, issue_summary]
+              properties:
+                customer_name: { type: string }
+                customer_whatsapp: { type: string }
+                device_brand: { type: string }
+                device_model: { type: string }
+                issue_summary: { type: string }
+                technician_name: { type: string }
+                warranty_days: { type: integer }
+                estimated_completion_date: { type: string, format: date }
+                niagawan_invoice_url: { type: string }
+      responses:
+        "201": { description: Created — includes repair_card_url and normalised customer_whatsapp }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: Full job detail
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Job }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Jobs]
+      summary: Attach or clear the Niagawan invoice URL
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                niagawan_invoice_url:
+                  type: string
+                  nullable: true
+                  example: https://niagawan.example/inv/abc123
+      responses:
+        "200": { description: Updated }
+        "400": { $ref: "#/components/responses/ValidationError" }
+
+  /api/jobs/{jobId}/status:
+    patch:
+      tags: [Jobs]
+      summary: Change status. The ONLY place Alia notifies the customer.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/JobStatus" }
+                note: { type: string }
+                notify_customer: { type: boolean, default: true }
+                allow_backward: { type: boolean, default: false }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/JobStatus" }
+                note: { type: string }
+                notify_customer: { type: boolean }
+                allow_backward: { type: boolean }
+                photo: { type: string, format: binary }
+      responses:
+        "200": { description: Updated; may include a `warning` if notify failed }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409": { description: Backwards transition without allow_backward }
+
+  /api/jobs/{jobId}/warranty-claim:
+    patch:
+      tags: [Jobs]
+      summary: Mark the warranty claimed
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+                allow_expired: { type: boolean, default: false }
+      responses:
+        "200": { description: Claimed }
+        "409": { description: "Already claimed, not started, or expired" }
+
+  /api/staff:
+    get:
+      tags: [Staff (admin)]
+      summary: List staff (admin only)
+      parameters:
+        - { name: branch_id, in: query, schema: { type: integer } }
+        - { name: role, in: query, schema: { type: string, enum: [admin, technician, staff] } }
+        - { name: include_inactive, in: query, schema: { type: boolean } }
+      responses:
+        "200": { description: Staff list }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Staff (admin)]
+      summary: Create a staff account (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, role, branch_id]
+              properties:
+                name: { type: string, example: Hafiz }
+                email: { type: string, example: hafiz@ifixexpress.com.my }
+                password: { type: string, format: password, minLength: 10 }
+                role: { type: string, enum: [admin, technician, staff] }
+                branch_id: { type: integer, example: 1 }
+      responses:
+        "201": { description: Created }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: Email already in use }
+
+  /api/staff/{id}:
+    patch:
+      tags: [Staff (admin)]
+      summary: Update staff — role, branch, deactivate, or reset password
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [admin, technician, staff] }
+                branch_id: { type: integer }
+                is_active: { type: boolean }
+                password: { type: string, format: password, minLength: 10 }
+      responses:
+        "200": { description: Updated }
+        "400": { description: "Validation error, or self-demotion/self-deactivation" }
+        "409": { description: Would deactivate the last active admin }

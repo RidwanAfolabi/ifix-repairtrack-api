@@ -7,53 +7,66 @@
 	"name": "ifix-repairtrack-api",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-07-16",
-	"assets": {
-		"binding": "ASSETS",
-		"directory": "./public"
-	},
 	"observability": {
 		"enabled": true
 	},
 	"upload_source_maps": true,
-	"compatibility_flags": [
-		"nodejs_compat"
+
+	// Serve the Worker on the API domain. custom_domain:true makes Cloudflare
+	// create and manage the DNS record + certificate for api.ifixexpress.com.my.
+	// Requires ifixexpress.com.my to be an active zone on this account.
+	"routes": [
+		{
+			"pattern": "api.ifixexpress.com.my",
+			"custom_domain": true
+		}
 	],
+
 	"d1_databases": [
 		{
-			"binding": "repairtrack_db",
+			"binding": "DB",
 			"database_name": "repairtrack-db",
-			"database_id": "58508e65-ec98-4d51-90a0-f9e45a99c699",
-			"remote": true
+			"database_id": "58508e65-ec98-4d51-90a0-f9e45a99c699"
 		}
 	],
+
 	"r2_buckets": [
 		{
-			"bucket_name": "repairtrack-media",
-			"binding": "repairtrack_media",
-			"remote": true
+			"binding": "MEDIA",
+			"bucket_name": "repairtrack-media"
 		}
-	]
-	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": {  "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
+	],
+
+	// Non-secret config only.
+	// Secrets (set via `wrangler secret put`): JWT_SECRET, ALIA_NOTIFY_SECRET.
+	"vars": {
+		"ALLOWED_ORIGIN": "https://app.ifixexpress.com.my",
+
+		// JWT lifetime in hours (1–24, default 8 = one retail shift).
+		// Logout is client-side, so this is also the revocation window:
+		// a deactivated staff member's existing token stays valid this long.
+		"SESSION_HOURS": "8",
+
+		"ALIA_WORKER_URL": "https://bot.ifixexpress.com.my",
+		"REPAIR_CARD_BASE_URL": "https://app.ifixexpress.com.my",
+
+		// Full prefix that R2 object keys are appended to.
+		// Custom domain on the repairtrack-media bucket — verified serving:
+		// photos come straight from R2, cached at edge, no Worker invocation.
+		// Single-level subdomain on purpose: Universal SSL does not cover
+		// multi-level names like media.api.ifixexpress.com.my.
+		//
+		// Worker-proxy fallback (routes/media.ts) if the domain is ever detached:
+		//   "https://api.ifixexpress.com.my/api/media"
+		// Local: wrangler dev --var MEDIA_BASE_URL:http://127.0.0.1:8787/api/media
+		"MEDIA_BASE_URL": "https://repair-media.ifixexpress.com.my"
+	}
+
 	/**
 	 * Service Bindings (communicate between multiple Workers)
+	 * When repair-bot-worker moves from HTTP fetch to a service binding,
+	 * add it here as ALIA and swap the transport in src/services/notify.ts.
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
 	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+	// "services": [ { "binding": "ALIA", "service": "repair-bot-worker" } ]
 }
