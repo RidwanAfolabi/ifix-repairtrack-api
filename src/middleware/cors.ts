@@ -22,7 +22,7 @@ export const corsMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
     // Returning the matched origin (not "*") is required because staff routes
     // send an Authorization header; wildcards are rejected with credentials.
     origin: (origin) => (allowed.includes(origin) ? origin : null),
-    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     maxAge: 86400,
   });

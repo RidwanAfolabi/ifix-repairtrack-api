@@ -1,12 +1,13 @@
 /**
  * Staff job management — all routes require auth.
  *
- *   GET   /api/jobs                      list, branch-scoped unless admin
- *   POST  /api/jobs                      intake (multipart, up to 3 photos)
- *   GET   /api/jobs/:jobId               full detail
- *   PATCH /api/jobs/:jobId               update niagawan_invoice_url
- *   PATCH /api/jobs/:jobId/status        status change (+ optional photo, notify)
- *   PATCH /api/jobs/:jobId/warranty-claim mark warranty claimed
+ *   GET    /api/jobs                      list, branch-scoped unless admin
+ *   POST   /api/jobs                      intake (multipart, up to 3 photos)
+ *   GET    /api/jobs/:jobId               full detail
+ *   PATCH  /api/jobs/:jobId               update niagawan_invoice_url
+ *   PATCH  /api/jobs/:jobId/status        status change (+ optional photo, notify)
+ *   PATCH  /api/jobs/:jobId/warranty-claim mark warranty claimed
+ *   DELETE /api/jobs/:jobId               permanently delete a job
  *
  * Branch scoping rule used throughout: a non-admin only ever sees or touches
  * jobs belonging to their own branch_id (taken from the JWT, never the body).
@@ -17,7 +18,13 @@ import { ApiError, badRequest, forbidden, notFound } from "../lib/http";
 import { parseBody, parseJson } from "../lib/body";
 import { insertWithUniqueJobId } from "../services/jobId";
 import { normalizeMalaysianMobile } from "../services/phone";
-import { uploadJobPhotos, uploadStatusPhoto, validateJobPhotos } from "../services/upload";
+import {
+  deleteObjects,
+  keyFromUrl,
+  uploadJobPhotos,
+  uploadStatusPhoto,
+  validateJobPhotos,
+} from "../services/upload";
 import { notifyAlia } from "../services/notify";
 import { calculateWarranty, canClaim, nowInMYT, todayInMYT } from "../services/warranty";
 import {
@@ -505,45 +512,33 @@ jobs.patch("/:jobId/status", async (c) => {
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
-   * MANUAL WHATSAPP SHARE FALLBACK — currently DISABLED
+   * MANUAL WHATSAPP SHARE FALLBACK
    * ═══════════════════════════════════════════════════════════════════════
-   *
-   * WHY THIS EXISTS
    * Alia can only deliver an automatic status update if either (a) an approved
    * Meta template exists, or (b) the customer messaged in the last 24 hours.
    * While the Meta app is under review neither may hold, and the update
-   * silently reaches nobody.
-   *
-   * This block returns the same clean data POST /api/jobs returns at intake,
-   * so the frontend can render a "Share update on WhatsApp" button that opens
-   * wa.me with a pre-filled message for staff to review and send themselves.
-   * Exactly like the intake share: staff-initiated, nothing sent automatically.
+   * silently reaches nobody — so this returns the same clean data
+   * POST /api/jobs returns at intake, letting the frontend render a
+   * "Share update on WhatsApp" button that opens wa.me with a pre-filled
+   * message for staff to review and send themselves. Exactly like the
+   * intake share: staff-initiated, nothing sent automatically.
    *
    * As with intake, this API does NOT build the wa.me URL — the frontend does:
    *   https://wa.me/{customer_whatsapp}?text={encodeURIComponent(message)}
-   *
-   * ── TO ENABLE ──────────────────────────────────────────────────────────
-   *   1. Uncomment the `whatsappShare` const below.
-   *   2. Uncomment the `whatsapp_share` line in the response object.
-   *   3. Have staff send updates with notify_customer=false so Alia does not
-   *      also try (and fail) — or leave it true and treat the manual share as
-   *      a backup for when `notified` comes back false.
-   *   4. Once Meta templates are approved, re-comment or delete this block.
-   * ───────────────────────────────────────────────────────────────────────
-   *
-   * const whatsappShare = {
-   *   job_id: jobId,
-   *   customer_name: job.customer_name,
-   *   // Already normalised to 60XXXXXXXXX at intake — wa.me-ready as-is.
-   *   customer_whatsapp: job.customer_whatsapp,
-   *   device_model: job.device_model,
-   *   branch_name: job.branch_name ?? "",
-   *   status: status,
-   *   status_label: STATUS_LABELS[status],
-   *   staff_note: note,
-   *   repair_card_url: repairCardUrl(c.env.REPAIR_CARD_BASE_URL, jobId),
-   * };
    * ═══════════════════════════════════════════════════════════════════════ */
+
+  const whatsappShare = {
+    job_id: jobId,
+    customer_name: job.customer_name,
+    // Already normalised to 60XXXXXXXXX at intake — wa.me-ready as-is.
+    customer_whatsapp: job.customer_whatsapp,
+    device_model: job.device_model,
+    branch_name: job.branch_name ?? "",
+    status: status,
+    status_label: STATUS_LABELS[status],
+    staff_note: note,
+    repair_card_url: repairCardUrl(c.env.REPAIR_CARD_BASE_URL, jobId),
+  };
 
   return c.json({
     job_id: jobId,
@@ -559,8 +554,7 @@ jobs.patch("/:jobId/status", async (c) => {
     },
     notified: notifyCustomer && !warning,
     ...(warning ? { warning } : {}),
-    // MANUAL WHATSAPP SHARE FALLBACK — uncomment together with the block above.
-    // whatsapp_share: whatsappShare,
+    whatsapp_share: whatsappShare,
   });
 });
 
@@ -612,6 +606,62 @@ jobs.patch("/:jobId/warranty-claim", async (c) => {
       claimNote: note,
     }),
   });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/jobs/:jobId
+// ---------------------------------------------------------------------------
+jobs.delete("/:jobId", async (c) => {
+  const staff = c.get("staff");
+  const jobId = c.req.param("jobId");
+  await loadJobForStaff(c.env.DB, jobId, staff);
+
+  // Reviews are never deleted — a customer-facing promise on the Reviews
+  // page ("no reviews are deleted"). Deleting a job that has one attached
+  // would delete the review as a side effect, so this is blocked outright
+  // rather than silently cascading through it.
+  const review = await c.env.DB.prepare(`SELECT id FROM reviews WHERE job_id = ?`)
+    .bind(jobId)
+    .first<{ id: number }>();
+  if (review) {
+    throw new ApiError(
+      409,
+      "REVIEW_ATTACHED",
+      "This job has a customer review attached and cannot be deleted — reviews are never removed from the system.",
+    );
+  }
+
+  const [photoRows, historyRows] = await c.env.DB.batch<unknown>([
+    c.env.DB.prepare(`SELECT photo_url FROM job_photos WHERE job_id = ?`).bind(jobId),
+    c.env.DB.prepare(
+      `SELECT photo_url FROM status_history WHERE job_id = ? AND photo_url IS NOT NULL`,
+    ).bind(jobId),
+  ]);
+
+  const urls = [
+    ...(photoRows.results as { photo_url: string }[]).map((r) => r.photo_url),
+    ...(historyRows.results as { photo_url: string }[]).map((r) => r.photo_url),
+  ];
+  const keys = urls
+    .map((url) => keyFromUrl(url, c.env.MEDIA_BASE_URL))
+    .filter((k): k is string => k !== null);
+
+  if (keys.length) {
+    // Storage cleanup is best-effort — an orphaned R2 object is a far
+    // cheaper mistake than refusing to delete the job record staff asked
+    // to remove because of an R2 hiccup.
+    await deleteObjects(c.env.MEDIA, keys).catch((err) => {
+      console.error(`Failed to delete R2 objects for ${jobId}`, err);
+    });
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM job_photos WHERE job_id = ?`).bind(jobId),
+    c.env.DB.prepare(`DELETE FROM status_history WHERE job_id = ?`).bind(jobId),
+    c.env.DB.prepare(`DELETE FROM jobs WHERE job_id = ?`).bind(jobId),
+  ]);
+
+  return c.json({ job_id: jobId, deleted: true });
 });
 
 export default jobs;

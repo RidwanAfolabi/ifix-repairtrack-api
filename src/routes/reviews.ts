@@ -70,6 +70,16 @@ reviews.get("/", async (c) => {
     params.push(stars);
   }
 
+  // Lets the Repair Card check whether a review already exists for this job
+  // (there's a unique index on reviews(job_id), so this matches 0 or 1 row)
+  // and pre-fill the form on repeat visits instead of always starting blank.
+  if (q.job_id !== undefined) {
+    const jobId = q.job_id.trim();
+    if (!jobId) throw badRequest("Invalid filter", { job_id: "must not be empty" });
+    filters.push("r.job_id = ?");
+    params.push(jobId);
+  }
+
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
 
   // Correlated subquery pulls one representative device photo per review's

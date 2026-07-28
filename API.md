@@ -24,6 +24,10 @@ Every error response:
 | `WARRANTY_ALREADY_CLAIMED` | 409 | Claimed twice |
 | `WARRANTY_NOT_STARTED` | 409 | Device not collected yet |
 | `WARRANTY_EXPIRED` | 409 | Claim outside window without override |
+| `REVIEW_ATTACHED` | 409 | Job has a review; deleting it would delete the review |
+| `STAFF_NOT_FOUND` | 404 | Unknown staff `id` |
+| `LAST_ADMIN` | 409 | Would deactivate/delete the only active admin |
+| `EMAIL_TAKEN` | 409 | Staff email already in use |
 | `INTERNAL_ERROR` | 500 | Unexpected; details are logged, not returned |
 
 ---
@@ -43,10 +47,17 @@ plus `repair_card_url`.
 `customer_whatsapp` is returned **unmasked** — mask it in the frontend.
 
 ### `GET /api/reviews`
-Query: `branch_id`, `stars`, `limit` (max 100), `offset`.
+Query: `branch_id`, `stars`, `job_id`, `limit` (max 100), `offset`.
 Returns `reviews[]` (each with `device_photo_url`, may be null) and
 `meta{ total, average_rating, limit, offset }`. Aggregates respect filters but
 ignore pagination.
+
+`job_id` matches 0 or 1 row (unique index on `reviews.job_id`) — used by the
+Repair Card to pre-fill the review form if the customer already reviewed.
+
+Reviews are never deleted — there is no `DELETE /api/reviews/:id` and none is
+planned; the Reviews page's "no reviews are deleted" promise to customers is
+enforced by omission, not by a guard. See `REVIEW_ATTACHED` below.
 
 ### `POST /api/reviews`
 Body: `job_id` (required), `stars` 1–5 (required), `comment`, `device_type`.
@@ -146,11 +157,29 @@ Body: `niagawan_invoice_url` (http/https URL, or `null` to clear).
 - `status: "collected"` sets `warranty_start_date` to today (Malaysia time), once only.
 - **The only place Alia is notified.** Failures never fail the update — the
   response carries `notified: false` and a `warning` string.
+- Response also includes `whatsapp_share{ job_id, customer_name, customer_whatsapp,
+  device_model, branch_name, status, status_label, staff_note, repair_card_url }`
+  — same shape as `POST /api/jobs`'s response, for the frontend to build a
+  manual `wa.me` fallback when Alia fails. Not conditioned on `notified`; the
+  frontend decides when to show the button.
 
 ### `PATCH /api/jobs/:jobId/warranty-claim`
 Body (all optional): `note`, `allow_expired`.
 Rejects a second claim, a claim before collection, and a claim on an expired
 warranty (`allow_expired: true` overrides for goodwill repairs).
+
+### `DELETE /api/jobs/:jobId`
+Permanently deletes the job row, its `job_photos`, and `status_history`, plus
+the underlying R2 objects (best-effort — a storage cleanup failure never
+blocks the delete). Same branch-scoping as every other job route: non-admins
+can only delete jobs at their own branch.
+
+Rejected with `409 REVIEW_ATTACHED` if a review exists for this job — deleting
+it would delete the review as a side effect, and reviews are never deleted.
+Delete the review's parent relationship isn't possible any other way, so this
+is a hard stop, not an override-able warning.
+
+Returns `{ job_id, deleted: true }`.
 
 ### `GET /api/branches`
 Active branches for dropdowns.
@@ -186,6 +215,20 @@ Lockout guards:
 
 > Deactivating an account blocks **login** immediately, but any JWT already
 > issued stays valid until it expires (max 8h). There is no token revocation.
+
+### `DELETE /api/staff/:id`
+Permanently removes the account (unlike `is_active: false`, which is
+reversible — prefer that for routine offboarding; this is for accounts
+created by mistake). Same lockout guards as `PATCH`, checked before deleting:
+
+| Action | Result |
+| --- | --- |
+| Delete your own account | `400` |
+| Delete the last active admin | `409 LAST_ADMIN` |
+
+Returns `{ id, deleted: true }`. `status_history.updated_by_name` and
+`warranty_claimed_by` are plain text snapshots, not foreign keys — deleting a
+staff account never orphans or breaks past job history.
 
 ---
 

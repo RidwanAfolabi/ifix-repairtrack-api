@@ -1,9 +1,10 @@
 /**
  * Admin-only staff management.
  *
- *   GET   /api/staff       list staff
- *   POST  /api/staff       create a staff account
- *   PATCH /api/staff/:id   update role/branch/name, deactivate, reset password
+ *   GET    /api/staff       list staff
+ *   POST   /api/staff       create a staff account
+ *   PATCH  /api/staff/:id   update role/branch/name, deactivate, reset password
+ *   DELETE /api/staff/:id   permanently remove an account
  *
  * This is the "future admin-only route" the build spec anticipated in place of
  * self-serve signup. There is still NO public registration: every account here
@@ -290,6 +291,55 @@ staff.patch("/:id", async (c) => {
     .first();
 
   return c.json(updated);
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/staff/:id
+// ---------------------------------------------------------------------------
+staff.delete("/:id", async (c) => {
+  const actor = c.get("staff");
+  const id = Number(c.req.param("id"));
+
+  if (!Number.isInteger(id)) {
+    throw badRequest("Invalid staff id", { id: "must be an integer" });
+  }
+
+  const target = await c.env.DB.prepare(
+    `SELECT id, role, is_active FROM staff WHERE id = ?`,
+  )
+    .bind(id)
+    .first<{ id: number; role: StaffRole; is_active: number }>();
+
+  if (!target) throw notFound(`No staff account with id ${id}`, "STAFF_NOT_FOUND");
+
+  // Same rationale as the self-deactivation guard on PATCH: deleting your
+  // own account mid-session is never something to allow, even for admins.
+  if (target.id === actor.staffId) {
+    throw badRequest("Invalid request", { id: "you cannot delete your own account" });
+  }
+
+  // Mirrors the LAST_ADMIN guard on PATCH is_active=false — deleting the
+  // only remaining active admin would lock the business out of admin routes
+  // just as surely as deactivating them would.
+  if (target.role === "admin" && target.is_active === 1) {
+    const remaining = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM staff WHERE role = 'admin' AND is_active = 1 AND id != ?`,
+    )
+      .bind(id)
+      .first<{ n: number }>();
+
+    if ((remaining?.n ?? 0) === 0) {
+      throw new ApiError(
+        409,
+        "LAST_ADMIN",
+        "Cannot delete the last active admin — promote another admin first",
+      );
+    }
+  }
+
+  await c.env.DB.prepare(`DELETE FROM staff WHERE id = ?`).bind(id).run();
+
+  return c.json({ id, deleted: true });
 });
 
 export default staff;

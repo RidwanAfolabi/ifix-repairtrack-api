@@ -140,3 +140,27 @@ export async function uploadStatusPhoto(
   const key = `status-photos/${jobId}/${Date.now()}.${ext}`;
   return put(bucket, key, file, mediaBaseUrl);
 }
+
+/**
+ * Recover the raw R2 key from a stored photo_url — the inverse of the
+ * `${mediaBaseUrl}/${key}` join done in put(). Returns null for a URL that
+ * doesn't start with the current MEDIA_BASE_URL (e.g. a row written back
+ * when MEDIA_BASE_URL pointed somewhere else) rather than deleting the
+ * wrong object.
+ */
+export function keyFromUrl(url: string, mediaBaseUrl: string): string | null {
+  const prefix = `${mediaBaseUrl.replace(/\/$/, "")}/`;
+  return url.startsWith(prefix) ? url.slice(prefix.length) : null;
+}
+
+/**
+ * Delete R2 objects by key. Best-effort by design: called during a job
+ * delete, and a stray orphaned object in R2 is a far cheaper mistake than
+ * refusing to delete the job record the staff member actually asked to
+ * remove. Callers should catch and log rather than let this block the
+ * database delete.
+ */
+export async function deleteObjects(bucket: R2Bucket, keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  await bucket.delete(keys);
+}
