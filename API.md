@@ -25,6 +25,10 @@ Every error response:
 | `WARRANTY_NOT_STARTED` | 409 | Device not collected yet |
 | `WARRANTY_EXPIRED` | 409 | Claim outside window without override |
 | `REVIEW_ATTACHED` | 409 | Job has a review; deleting it would delete the review |
+| `HISTORY_ENTRY_NOT_FOUND` | 404 | Unknown status-history entry `id` |
+| `CURRENT_ENTRY` | 409 | Can't delete the current/latest status-history entry |
+| `PHOTO_NOT_FOUND` | 404 | Unknown intake photo `id` |
+| `REVIEW_NOT_FOUND` | 404 | Unknown review `id` |
 | `STAFF_NOT_FOUND` | 404 | Unknown staff `id` |
 | `LAST_ADMIN` | 409 | Would deactivate/delete the only active admin |
 | `EMAIL_TAKEN` | 409 | Staff email already in use |
@@ -55,9 +59,9 @@ ignore pagination.
 `job_id` matches 0 or 1 row (unique index on `reviews.job_id`) — used by the
 Repair Card to pre-fill the review form if the customer already reviewed.
 
-Reviews are never deleted — there is no `DELETE /api/reviews/:id` and none is
-planned; the Reviews page's "no reviews are deleted" promise to customers is
-enforced by omission, not by a guard. See `REVIEW_ATTACHED` below.
+Reviews are not deleted through normal product use — there is no customer or
+general-staff path to remove one. See `DELETE /api/reviews/:id` below for the
+one exception. See also `REVIEW_ATTACHED` below.
 
 ### `POST /api/reviews`
 Body: `job_id` (required), `stars` 1–5 (required), `comment`, `device_type`.
@@ -65,6 +69,16 @@ Body: `job_id` (required), `stars` 1–5 (required), `comment`, `device_type`.
 
 **Upsert:** one review per job. First submission → `201`; re-posting the same
 `job_id` edits it → `200` with `edited: true`. `created_at` is preserved.
+
+### `DELETE /api/reviews/:id` — requires auth **and** `role: "admin"`
+
+Unlike `GET`/`POST` on this route, this one is not public — it's the one
+exception to "reviews are never deleted," restricted to admins specifically
+(the same access bar as staff account management) because it's the one write
+path in the whole system that can make real customer feedback disappear.
+Intended for cleaning up test/erroneous entries, not routine moderation.
+
+Returns `{ id, deleted: true }`. `404 REVIEW_NOT_FOUND` if the id doesn't exist.
 
 ### `GET /api/media/*`
 Serves uploaded photos from R2. Read-only, restricted to `photos/` and
@@ -143,7 +157,9 @@ number returns `400`.
 and the normalised `customer_whatsapp` for building the frontend `wa.me` link.
 
 ### `GET /api/jobs/:jobId`
-Full detail plus computed `warranty{}`, `photos[]`, `status_history[]`.
+Full detail plus computed `warranty{}`, `photos[]`, `status_history[]`. Each
+entry in both arrays includes its own `id`, needed to target the two
+granular delete routes below.
 
 ### `PATCH /api/jobs/:jobId`
 Body: `niagawan_invoice_url` (http/https URL, or `null` to clear).
@@ -175,11 +191,35 @@ blocks the delete). Same branch-scoping as every other job route: non-admins
 can only delete jobs at their own branch.
 
 Rejected with `409 REVIEW_ATTACHED` if a review exists for this job — deleting
-it would delete the review as a side effect, and reviews are never deleted.
-Delete the review's parent relationship isn't possible any other way, so this
-is a hard stop, not an override-able warning.
+the job would silently take the review down with it. This is a deliberate
+two-step requirement, not an override-able warning: delete the review first
+via `DELETE /api/reviews/:id` (admin only) if it genuinely needs to go, then
+delete the job.
 
 Returns `{ job_id, deleted: true }`.
+
+### `DELETE /api/jobs/:jobId/status-history/:entryId`
+Removes a single status-history entry — for fixing a mistake (wrong photo,
+wrong note, logged against the wrong job) without deleting the whole job.
+Same branch-scoping as every other job route.
+
+The **current/latest entry can't be removed this way** — `jobs.current_status`
+is a denormalised column, not derived live from `status_history`, so deleting
+the entry it points at would leave it orphaned. Returns `409 CURRENT_ENTRY`;
+use a real status update (optionally `allow_backward`) instead. `404
+HISTORY_ENTRY_NOT_FOUND` if the entry doesn't exist on this job. Any attached
+R2 photo is deleted best-effort along with the row.
+
+Returns `{ job_id, entry_id, deleted: true }`.
+
+### `DELETE /api/jobs/:jobId/photos/:photoId`
+Removes a single intake photo without deleting the whole job. Unlike status
+history there's no "current" photo — any photo can be removed freely (0
+photos is already a normal, supported state on the Repair Card). Same
+branch-scoping. `404 PHOTO_NOT_FOUND` if the photo doesn't exist on this job.
+The R2 object is deleted best-effort along with the row.
+
+Returns `{ job_id, photo_id, deleted: true }`.
 
 ### `GET /api/branches`
 Active branches for dropdowns.
@@ -290,7 +330,9 @@ The stored URL is always `${MEDIA_BASE_URL}/${key}`. Two valid styles:
 multi-level subdomains like `media.api.ifixexpress.com.my` — that needs
 Advanced Certificate Manager. Prefer a single-level name.
 
-Local dev:
-```bash
-npx wrangler dev --local --var MEDIA_BASE_URL:http://127.0.0.1:8787/api/media
-```
+Local dev: override both `REPAIR_CARD_BASE_URL` and `MEDIA_BASE_URL` in
+`.dev.vars` (gitignored; copy `.dev.vars.example` to start) rather than via
+`--var` flags — `.dev.vars` auto-loads on every `wrangler dev --local`, so it
+doesn't need to be remembered per invocation. Without this override, jobs
+created locally bake in the **production** domain, which 404s for anyone who
+clicks the link since the job only exists in local D1.

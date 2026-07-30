@@ -8,6 +8,8 @@
  *   PATCH  /api/jobs/:jobId/status        status change (+ optional photo, notify)
  *   PATCH  /api/jobs/:jobId/warranty-claim mark warranty claimed
  *   DELETE /api/jobs/:jobId               permanently delete a job
+ *   DELETE /api/jobs/:jobId/status-history/:entryId  remove one history entry
+ *   DELETE /api/jobs/:jobId/photos/:photoId          remove one intake photo
  *
  * Branch scoping rule used throughout: a non-admin only ever sees or touches
  * jobs belonging to their own branch_id (taken from the JWT, never the body).
@@ -342,11 +344,11 @@ jobs.get("/:jobId", async (c) => {
 
   const [photosRes, historyRes] = await c.env.DB.batch<unknown>([
     c.env.DB.prepare(
-      `SELECT photo_url, sort_order, uploaded_at FROM job_photos
+      `SELECT id, photo_url, sort_order, uploaded_at FROM job_photos
         WHERE job_id = ? ORDER BY sort_order ASC, id ASC`,
     ).bind(jobId),
     c.env.DB.prepare(
-      `SELECT status, note, photo_url, updated_by_name, timestamp FROM status_history
+      `SELECT id, status, note, photo_url, updated_by_name, timestamp FROM status_history
         WHERE job_id = ? ORDER BY timestamp ASC, id ASC`,
     ).bind(jobId),
   ]);
@@ -616,10 +618,10 @@ jobs.delete("/:jobId", async (c) => {
   const jobId = c.req.param("jobId");
   await loadJobForStaff(c.env.DB, jobId, staff);
 
-  // Reviews are never deleted — a customer-facing promise on the Reviews
-  // page ("no reviews are deleted"). Deleting a job that has one attached
-  // would delete the review as a side effect, so this is blocked outright
-  // rather than silently cascading through it.
+  // Reviews now have their own explicit delete path (admin-only, see
+  // reviews.ts), but a job with one attached still can't be deleted directly
+  // — this is a deliberate two-step requirement, not an oversight, so a
+  // review is never lost as a silent side effect of deleting its job.
   const review = await c.env.DB.prepare(`SELECT id FROM reviews WHERE job_id = ?`)
     .bind(jobId)
     .first<{ id: number }>();
@@ -627,7 +629,7 @@ jobs.delete("/:jobId", async (c) => {
     throw new ApiError(
       409,
       "REVIEW_ATTACHED",
-      "This job has a customer review attached and cannot be deleted — reviews are never removed from the system.",
+      "This job has a customer review attached and cannot be deleted this way — delete the review first (admin only) if it genuinely needs to go.",
     );
   }
 
@@ -662,6 +664,102 @@ jobs.delete("/:jobId", async (c) => {
   ]);
 
   return c.json({ job_id: jobId, deleted: true });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/jobs/:jobId/status-history/:entryId
+//
+// Removes a single history entry — for fixing a mistake (wrong photo, wrong
+// note, logged against the wrong job) without deleting the whole job and
+// losing its otherwise-legitimate history.
+//
+// The current/latest entry can't be removed this way: jobs.current_status is
+// a separate denormalised column, not derived live from status_history, so
+// deleting the entry it corresponds to would leave current_status pointing
+// at nothing. Use a real status update (optionally allow_backward) instead.
+// ---------------------------------------------------------------------------
+jobs.delete("/:jobId/status-history/:entryId", async (c) => {
+  const staff = c.get("staff");
+  const jobId = c.req.param("jobId");
+  await loadJobForStaff(c.env.DB, jobId, staff);
+
+  const entryId = Number(c.req.param("entryId"));
+  if (!Number.isInteger(entryId)) {
+    throw badRequest("Invalid entry id", { entryId: "must be an integer" });
+  }
+
+  const entry = await c.env.DB.prepare(
+    `SELECT id, photo_url FROM status_history WHERE id = ? AND job_id = ?`,
+  )
+    .bind(entryId, jobId)
+    .first<{ id: number; photo_url: string | null }>();
+
+  if (!entry) throw notFound(`No status history entry with id ${entryId}`, "HISTORY_ENTRY_NOT_FOUND");
+
+  const latest = await c.env.DB.prepare(
+    `SELECT id FROM status_history WHERE job_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1`,
+  )
+    .bind(jobId)
+    .first<{ id: number }>();
+
+  if (latest?.id === entry.id) {
+    throw new ApiError(
+      409,
+      "CURRENT_ENTRY",
+      "Cannot delete the current status entry — update the status instead if it needs to change.",
+    );
+  }
+
+  if (entry.photo_url) {
+    const key = keyFromUrl(entry.photo_url, c.env.MEDIA_BASE_URL);
+    if (key) {
+      await deleteObjects(c.env.MEDIA, [key]).catch((err) => {
+        console.error(`Failed to delete R2 object for status history entry ${entryId}`, err);
+      });
+    }
+  }
+
+  await c.env.DB.prepare(`DELETE FROM status_history WHERE id = ?`).bind(entryId).run();
+
+  return c.json({ job_id: jobId, entry_id: entryId, deleted: true });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/jobs/:jobId/photos/:photoId
+//
+// Removes a single intake photo — for removing one bad photo without
+// deleting the whole job. Unlike status history, there's no "current" photo
+// concept, so any photo can be removed freely (0 photos is already a normal,
+// supported state on the Repair Card).
+// ---------------------------------------------------------------------------
+jobs.delete("/:jobId/photos/:photoId", async (c) => {
+  const staff = c.get("staff");
+  const jobId = c.req.param("jobId");
+  await loadJobForStaff(c.env.DB, jobId, staff);
+
+  const photoId = Number(c.req.param("photoId"));
+  if (!Number.isInteger(photoId)) {
+    throw badRequest("Invalid photo id", { photoId: "must be an integer" });
+  }
+
+  const photo = await c.env.DB.prepare(
+    `SELECT id, photo_url FROM job_photos WHERE id = ? AND job_id = ?`,
+  )
+    .bind(photoId, jobId)
+    .first<{ id: number; photo_url: string }>();
+
+  if (!photo) throw notFound(`No photo with id ${photoId}`, "PHOTO_NOT_FOUND");
+
+  const key = keyFromUrl(photo.photo_url, c.env.MEDIA_BASE_URL);
+  if (key) {
+    await deleteObjects(c.env.MEDIA, [key]).catch((err) => {
+      console.error(`Failed to delete R2 object for photo ${photoId}`, err);
+    });
+  }
+
+  await c.env.DB.prepare(`DELETE FROM job_photos WHERE id = ?`).bind(photoId).run();
+
+  return c.json({ job_id: jobId, photo_id: photoId, deleted: true });
 });
 
 export default jobs;

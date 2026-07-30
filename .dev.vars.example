@@ -2,3 +2,11 @@
 # In production these are set with `wrangler secret put <NAME>`.
 
 JWT_SECRET="generate-a-long-random-string-for-local-dev-only"
+ALIA_NOTIFY_SECRET="any-string-locally-alia-doesnt-exist-yet"
+
+# Non-secret, but override these too — wrangler.jsonc's `vars` block points
+# at the real production domain, and without a local override every
+# repair_card_url/photo_url baked into a locally-created job would point
+# there instead of your local dev server, 404ing for anyone who clicks it.
+REPAIR_CARD_BASE_URL="http://localhost:5173"
+MEDIA_BASE_URL="http://127.0.0.1:8787/api/media"

@@ -1,5 +1,6 @@
 /**
- * Public — GET /api/reviews, POST /api/reviews
+ * GET /api/reviews, POST /api/reviews — public, no auth.
+ * DELETE /api/reviews/:id — staff auth + admin role required.
  *
  * GET returns a paginated list plus a `meta` object carrying the aggregate
  * average rating and total count. Aggregates respect the branch_id/stars
@@ -10,8 +11,17 @@
  * reviews(job_id). Re-posting for the same job edits the existing review
  * rather than creating a duplicate, so a customer can revise their rating
  * or comment. Returns 201 on first submission, 200 on edit.
+ *
+ * DELETE exists for admin cleanup of test/erroneous data — it does NOT
+ * change the fact that reviews are otherwise never removed through normal
+ * product use. Restricted to admins specifically (not just any staff)
+ * because deleting a review is a much bigger trust event than editing a
+ * job — this is the one write path in the whole system that can make real
+ * customer feedback disappear, so it gets the same access bar as staff
+ * account management.
  */
 import { Hono } from "hono";
+import { requireAuth, requireRole } from "../middleware/auth";
 import { badRequest, notFound } from "../lib/http";
 import { parseJson } from "../lib/body";
 import type { AppEnv } from "../types";
@@ -186,6 +196,23 @@ reviews.post("/", async (c) => {
     .first<ReviewRow>();
 
   return c.json({ ...saved, edited: Boolean(existing) }, existing ? 200 : 201);
+});
+
+reviews.delete("/:id", requireAuth, requireRole("admin"), async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) {
+    throw badRequest("Invalid review id", { id: "must be an integer" });
+  }
+
+  const existing = await c.env.DB.prepare(`SELECT id FROM reviews WHERE id = ?`)
+    .bind(id)
+    .first<{ id: number }>();
+
+  if (!existing) throw notFound(`No review with id ${id}`, "REVIEW_NOT_FOUND");
+
+  await c.env.DB.prepare(`DELETE FROM reviews WHERE id = ?`).bind(id).run();
+
+  return c.json({ id, deleted: true });
 });
 
 export default reviews;
