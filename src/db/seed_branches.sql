@@ -15,4 +15,5 @@ INSERT INTO branches (name, city, address, whatsapp_number, is_active) VALUES
   ('IFIX EXPRESS CHANGLOON', 'CHANGLOON', '47, Jalan Pekan Changloon 6, Kampung Baru Changloon, 06010 Changlun, Kedah.', '60175492649', 1),
   ('IFIX EXPRESS PENDANG', 'PENDANG', 'Lot No-8, Bangunan Perniagaan Permai Indah, Jalan Persiaran Permai Indah, Pendang, Kedah.', '60175492649', 1),
   ('IFIX EXPRESS POKOK SENA', 'POKOK SENA', 'No 34A, Tingkat Bawah, Taman Jabi 2, 06400 Pokok Sena, Kedah.', '60175492649', 1),
-  ('IFIX EXPRESS BALIK PULAU', 'BALIK PULAU', '858K, Jalan Balik Pulau, Taman Sri Indah, 11000 Balik Pulau, Pulau Pinang', '60175492649', 1);
+  ('IFIX EXPRESS BALIK PULAU', 'BALIK PULAU', '858K, Jalan Balik Pulau, Taman Sri Indah, 11000 Balik Pulau, Pulau Pinang', '60175492649', 1),
+  ('IFIX EXPRESS KUALA NERANG', 'KUALA NERANG', '63A, Pekan Baru, 06300 Kuala Nerang, Kedah.', '60175492649', 1);
