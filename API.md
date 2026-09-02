@@ -224,6 +224,18 @@ Returns `{ job_id, photo_id, deleted: true }`.
 ### `GET /api/branches`
 Active branches for dropdowns.
 
+### `GET /api/customers`
+Query: `search` (required — matches against customer name and phone digits;
+omitted or empty returns `{ customers: [] }`), `limit` (default 8, max 20).
+
+Powers a "have we served this customer before?" typeahead on job intake.
+There's no separate `customers` table — results are distinct customers
+derived from `jobs` (grouped by `customer_whatsapp`, the natural key), each
+with `customer_whatsapp`, `customer_name` (from their most recent job),
+`last_seen`, and `job_count`. **Not branch-scoped** — any authenticated
+staff member can match a customer regardless of which branch served them
+before, since recognising a returning customer across branches is the point.
+
 ---
 
 ## Admin-only staff management

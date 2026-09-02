@@ -20,6 +20,7 @@ import authRoutes from "./routes/auth";
 import jobRoutes from "./routes/jobs";
 import branchRoutes from "./routes/branches";
 import staffRoutes from "./routes/staff";
+import customerRoutes from "./routes/customers";
 
 const app = new Hono<AppEnv>();
 
@@ -39,6 +40,8 @@ app.route("/api/jobs", jobRoutes);
 app.route("/api/branches", branchRoutes);
 // Admin-only staff management (replaces terminal SQL for onboarding).
 app.route("/api/staff", staffRoutes);
+// Returning-customer typeahead for the New Job intake form.
+app.route("/api/customers", customerRoutes);
 
 // --- Health check (no auth, no DB) ------------------------------------------
 app.get("/api/health", (c) => c.json({ ok: true }));
