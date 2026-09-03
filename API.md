@@ -156,6 +156,13 @@ number returns `400`.
 **Does not notify Alia.** Returns `job_id`, `repair_card_url`, `customer_name`,
 and the normalised `customer_whatsapp` for building the frontend `wa.me` link.
 
+**Job ID format:** `IFX-YYMM-NNNNNN` (e.g. `IFX-2609-000001`) — year before
+month so IDs keep sorting correctly across year boundaries, and a serial
+that resets to `000001` at the start of each calendar month (Malaysia
+time). Jobs created before this format shipped use the older plain
+`IFX-NNNNN` form; both coexist and both work everywhere a job ID is
+accepted — nothing parses the format beyond treating it as an opaque key.
+
 ### `GET /api/jobs/:jobId`
 Full detail plus computed `warranty{}`, `photos[]`, `status_history[]`. Each
 entry in both arrays includes its own `id`, needed to target the two
