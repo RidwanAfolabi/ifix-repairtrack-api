@@ -162,7 +162,18 @@ entry in both arrays includes its own `id`, needed to target the two
 granular delete routes below.
 
 ### `PATCH /api/jobs/:jobId`
-Body: `niagawan_invoice_url` (http/https URL, or `null` to clear).
+Edits job/customer details after intake — e.g. fixing a mistyped customer
+name or WhatsApp number. Body: any of `customer_name`, `customer_whatsapp`,
+`device_brand`, `device_model`, `issue_summary`, `technician_name`,
+`estimated_completion_date` (`YYYY-MM-DD`), `niagawan_invoice_url` — all
+optional and independent; only the fields present are validated and
+updated. `customer_whatsapp` goes through the same normalization as intake.
+`technician_name`, `estimated_completion_date`, and `niagawan_invoice_url`
+accept `null` to clear; `customer_name`/`device_brand`/`device_model`/
+`issue_summary` can't be set to empty (same requiredness as intake — they're
+`NOT NULL` columns). `400` if the body has none of the above fields.
+
+Returns the updated fields plus `job_id`.
 
 ### `PATCH /api/jobs/:jobId/status`
 `multipart/form-data` or JSON. Fields: `status` (required), `note`,

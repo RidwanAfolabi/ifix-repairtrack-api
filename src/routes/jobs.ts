@@ -4,7 +4,7 @@
  *   GET    /api/jobs                      list, branch-scoped unless admin
  *   POST   /api/jobs                      intake (multipart, up to 3 photos)
  *   GET    /api/jobs/:jobId               full detail
- *   PATCH  /api/jobs/:jobId               update niagawan_invoice_url
+ *   PATCH  /api/jobs/:jobId               edit job/customer details
  *   PATCH  /api/jobs/:jobId/status        status change (+ optional photo, notify)
  *   PATCH  /api/jobs/:jobId/warranty-claim mark warranty claimed
  *   DELETE /api/jobs/:jobId               permanently delete a job
@@ -375,7 +375,15 @@ jobs.get("/:jobId", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// PATCH /api/jobs/:jobId — attach the Niagawan invoice after the fact
+// PATCH /api/jobs/:jobId — edit job/customer details after intake
+//
+// Every field is optional and independent — only the ones present in the
+// body are validated and updated, so fixing a mistyped phone number doesn't
+// require resending the whole job. customer_name/device_brand/device_model/
+// issue_summary map to NOT NULL columns and can't be cleared to empty once
+// set (same requiredness as at intake); technician_name,
+// estimated_completion_date, and niagawan_invoice_url are nullable and can
+// be cleared with null (or "").
 // ---------------------------------------------------------------------------
 jobs.patch("/:jobId", async (c) => {
   const staff = c.get("staff");
@@ -383,30 +391,112 @@ jobs.patch("/:jobId", async (c) => {
   await loadJobForStaff(c.env.DB, jobId, staff);
 
   const body = await parseJson(c);
+  const errors: Record<string, string> = {};
+  const updates: string[] = [];
+  const params: (string | null)[] = [];
 
-  if (!("niagawan_invoice_url" in body)) {
-    throw badRequest("Nothing to update", {
-      niagawan_invoice_url: "required — this is the only editable field here",
-    });
+  if ("customer_name" in body) {
+    const name = text(body, "customer_name");
+    if (!name) errors.customer_name = "cannot be empty";
+    else {
+      updates.push("customer_name = ?");
+      params.push(name);
+    }
   }
 
-  const raw = body.niagawan_invoice_url;
-  // Explicit null clears a wrongly-pasted link.
-  const url = raw === null || raw === "" ? null : typeof raw === "string" ? raw.trim() : "";
+  if ("customer_whatsapp" in body) {
+    // Same normalization as intake — the canonical stored value is always
+    // the digits-only "60XXXXXXXXX" form, never whatever format staff typed.
+    const phone = normalizeMalaysianMobile(body.customer_whatsapp);
+    if (!phone.ok) errors.customer_whatsapp = phone.reason;
+    else {
+      updates.push("customer_whatsapp = ?");
+      params.push(phone.normalized);
+    }
+  }
 
-  if (url !== null && !/^https?:\/\//i.test(url)) {
-    throw badRequest("Invalid invoice URL", {
-      niagawan_invoice_url: "must be an http(s) URL, or null to clear",
+  if ("device_brand" in body) {
+    const brand = text(body, "device_brand");
+    if (!brand) errors.device_brand = "cannot be empty";
+    else {
+      updates.push("device_brand = ?");
+      params.push(brand);
+    }
+  }
+
+  if ("device_model" in body) {
+    const model = text(body, "device_model");
+    if (!model) errors.device_model = "cannot be empty";
+    else {
+      updates.push("device_model = ?");
+      params.push(model);
+    }
+  }
+
+  if ("issue_summary" in body) {
+    const summary = text(body, "issue_summary");
+    if (!summary) errors.issue_summary = "cannot be empty";
+    else {
+      updates.push("issue_summary = ?");
+      params.push(summary);
+    }
+  }
+
+  if ("technician_name" in body) {
+    const raw = body.technician_name;
+    const name = raw === null || raw === "" ? null : typeof raw === "string" ? raw.trim() : "";
+    if (name === "") errors.technician_name = "must be a string, or null to clear";
+    else {
+      updates.push("technician_name = ?");
+      params.push(name);
+    }
+  }
+
+  if ("estimated_completion_date" in body) {
+    const raw = body.estimated_completion_date;
+    const date = raw === null || raw === "" ? null : typeof raw === "string" ? raw.trim() : "";
+    if (date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      errors.estimated_completion_date = "must be in YYYY-MM-DD format, or null to clear";
+    } else {
+      updates.push("estimated_completion_date = ?");
+      params.push(date);
+    }
+  }
+
+  if ("niagawan_invoice_url" in body) {
+    const raw = body.niagawan_invoice_url;
+    // Explicit null clears a wrongly-pasted link.
+    const url = raw === null || raw === "" ? null : typeof raw === "string" ? raw.trim() : "";
+    if (url !== null && !/^https?:\/\//i.test(url)) {
+      errors.niagawan_invoice_url = "must be an http(s) URL, or null to clear";
+    } else {
+      updates.push("niagawan_invoice_url = ?");
+      params.push(url);
+    }
+  }
+
+  if (Object.keys(errors).length) throw badRequest("Invalid job update", errors);
+  if (!updates.length) {
+    throw badRequest("Nothing to update", {
+      body: "provide at least one of: customer_name, customer_whatsapp, device_brand, device_model, issue_summary, technician_name, estimated_completion_date, niagawan_invoice_url",
     });
   }
 
   await c.env.DB.prepare(
-    `UPDATE jobs SET niagawan_invoice_url = ?, updated_at = datetime('now') WHERE job_id = ?`,
+    `UPDATE jobs SET ${updates.join(", ")}, updated_at = datetime('now') WHERE job_id = ?`,
   )
-    .bind(url, jobId)
+    .bind(...params, jobId)
     .run();
 
-  return c.json({ job_id: jobId, niagawan_invoice_url: url });
+  const updated = await c.env.DB.prepare(
+    `SELECT customer_name, customer_whatsapp, device_brand, device_model, issue_summary,
+            technician_name, estimated_completion_date, niagawan_invoice_url
+       FROM jobs WHERE job_id = ?`,
+  )
+    .bind(jobId)
+    .first();
+
+  return c.json({ job_id: jobId, ...updated });
 });
 
 // ---------------------------------------------------------------------------
