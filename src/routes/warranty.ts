@@ -1,12 +1,19 @@
 /**
  * Public — GET /api/warranty/:jobId
  *
- * Customer name and WhatsApp are returned UNMASKED by design; masking
- * (e.g. 0112*****68) is a frontend presentation concern only.
+ * customer_whatsapp is masked server-side (e.g. "0123****89") before being
+ * returned. This is a no-auth, job_id-only-gated endpoint, and job_id is a
+ * fairly guessable identifier — an unmasked number here would let anyone
+ * who has (or guesses) a job_id read the customer's real number straight
+ * off this endpoint, which would in turn let them pass the "must know the
+ * customer's own number" ownership check on POST /api/reviews. Masking is
+ * done here, not just in the frontend, because a raw API request bypasses
+ * any frontend-only masking entirely.
  */
 import { Hono } from "hono";
 import { notFound } from "../lib/http";
 import { calculateWarranty } from "../services/warranty";
+import { maskWhatsapp } from "../services/phone";
 import type { AppEnv } from "../types";
 
 const warranty = new Hono<AppEnv>();
@@ -57,8 +64,8 @@ warranty.get("/:jobId", async (c) => {
   return c.json({
     job_id: row.job_id,
     customer_name: row.customer_name,
-    // Unmasked on purpose — see file header.
-    customer_whatsapp: row.customer_whatsapp,
+    // Masked — see file header.
+    customer_whatsapp: maskWhatsapp(row.customer_whatsapp),
     device_brand: row.device_brand,
     device_model: row.device_model,
     branch_name: row.branch_name,

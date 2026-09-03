@@ -12,6 +12,21 @@
  * rather than creating a duplicate, so a customer can revise their rating
  * or comment. Returns 201 on first submission, 200 on edit.
  *
+ * POST has two anti-impersonation guards, since job_id alone is a fairly
+ * low-entropy, sequential, publicly-known identifier (staff read it aloud,
+ * print it on receipts) — anyone who has or guesses one could otherwise
+ * post a review, or fraudulently "claim" a job's one review slot, without
+ * ever having been served:
+ *   1. `customer_whatsapp` must match the job's own record — a guesser has
+ *      the job_id but almost certainly not the customer's phone number too.
+ *   2. The job must already be `collected` — closes the window entirely for
+ *      jobs still in progress, and matches the real workflow (you review a
+ *      finished repair, not one that hasn't happened yet).
+ * Neither is unbeatable (nothing short of real auth is — see the
+ * conversation this was decided in), but together they raise the bar well
+ * past casual guessing for meaningfully lower cost than a token/auth
+ * system, and admins can still delete anything that slips through anyway.
+ *
  * DELETE exists for admin cleanup of test/erroneous data — it does NOT
  * change the fact that reviews are otherwise never removed through normal
  * product use. Restricted to admins specifically (not just any staff)
@@ -22,8 +37,9 @@
  */
 import { Hono } from "hono";
 import { requireAuth, requireRole } from "../middleware/auth";
-import { badRequest, notFound } from "../lib/http";
+import { ApiError, badRequest, notFound } from "../lib/http";
 import { parseJson } from "../lib/body";
+import { normalizeMalaysianMobile } from "../services/phone";
 import type { AppEnv } from "../types";
 
 const reviews = new Hono<AppEnv>();
@@ -146,6 +162,13 @@ reviews.post("/", async (c) => {
     fields.stars = "required, must be an integer between 1 and 5";
   }
 
+  // Ownership check #1 (see file header) — the customer must supply their
+  // own number, same as at intake. Malformed/missing is a plain 400, same
+  // as any other required field; a well-formed but WRONG number is checked
+  // separately below, once the job record is loaded, as a 403.
+  const phone = normalizeMalaysianMobile(body.customer_whatsapp);
+  if (!phone.ok) fields.customer_whatsapp = phone.reason;
+
   if (body.comment !== undefined && body.comment !== null && typeof body.comment !== "string") {
     fields.comment = "must be a string";
   }
@@ -162,12 +185,36 @@ reviews.post("/", async (c) => {
   }
 
   // branch_id is derived from the job record — never trusted from the body.
-  const job = await c.env.DB.prepare(`SELECT job_id, branch_id FROM jobs WHERE job_id = ?`)
+  const job = await c.env.DB.prepare(
+    `SELECT job_id, branch_id, customer_whatsapp, current_status FROM jobs WHERE job_id = ?`,
+  )
     .bind(jobId)
-    .first<{ job_id: string; branch_id: number }>();
+    .first<{ job_id: string; branch_id: number; customer_whatsapp: string; current_status: string }>();
 
   if (!job) {
     throw notFound(`No repair job found with ID ${jobId}`, "JOB_NOT_FOUND");
+  }
+
+  // Ownership check #1, part 2 — matches the job's own stored number.
+  // Cast is safe: the batched validation above already threw on !phone.ok.
+  const customerWhatsapp = (phone as { ok: true; normalized: string }).normalized;
+  if (customerWhatsapp !== job.customer_whatsapp) {
+    throw new ApiError(
+      403,
+      "CUSTOMER_MISMATCH",
+      "That WhatsApp number doesn't match our records for this job.",
+    );
+  }
+
+  // Ownership check #2 (see file header) — no reviewing a repair that isn't
+  // finished yet. Also closes the guessing window for in-progress jobs
+  // entirely, regardless of whether the phone number happened to match.
+  if (job.current_status !== "collected") {
+    throw new ApiError(
+      409,
+      "JOB_NOT_COLLECTED",
+      "This job hasn't been marked as collected yet — reviews open once the repair is complete.",
+    );
   }
 
   // Was there already a review? Determines 201-created vs 200-edited.

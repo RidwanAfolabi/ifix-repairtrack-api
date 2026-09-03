@@ -29,6 +29,8 @@ Every error response:
 | `CURRENT_ENTRY` | 409 | Can't delete the current/latest status-history entry |
 | `PHOTO_NOT_FOUND` | 404 | Unknown intake photo `id` |
 | `REVIEW_NOT_FOUND` | 404 | Unknown review `id` |
+| `CUSTOMER_MISMATCH` | 403 | Review's `customer_whatsapp` doesn't match the job's own record |
+| `JOB_NOT_COLLECTED` | 409 | Review submitted before the job reached `collected` status |
 | `STAFF_NOT_FOUND` | 404 | Unknown staff `id` |
 | `LAST_ADMIN` | 409 | Would deactivate/delete the only active admin |
 | `EMAIL_TAKEN` | 409 | Staff email already in use |
@@ -64,11 +66,22 @@ general-staff path to remove one. See `DELETE /api/reviews/:id` below for the
 one exception. See also `REVIEW_ATTACHED` below.
 
 ### `POST /api/reviews`
-Body: `job_id` (required), `stars` 1–5 (required), `comment`, `device_type`.
-`branch_id` is derived from the job — it is ignored if sent.
+Body: `job_id` (required), `stars` 1–5 (required), `customer_whatsapp`
+(required — any Malaysian mobile format, normalized the same as intake),
+`comment`, `device_type`. `branch_id` is derived from the job — it is
+ignored if sent.
 
 **Upsert:** one review per job. First submission → `201`; re-posting the same
 `job_id` edits it → `200` with `edited: true`. `created_at` is preserved.
+
+**Ownership guards** — `job_id` alone is a fairly guessable identifier
+(sequential, read aloud by staff, printed on receipts), so two checks stand
+between "knows a job_id" and "can post as that customer": `customer_whatsapp`
+must match the job's own stored number (`403 CUSTOMER_MISMATCH` if not), and
+the job must already be `collected` (`409 JOB_NOT_COLLECTED` if not — also
+closes the window for in-progress jobs regardless of phone match). Neither
+is unbeatable on its own, but together they're a meaningfully higher bar
+than casual guessing, at much lower cost than a real auth/token system.
 
 ### `DELETE /api/reviews/:id` — requires auth **and** `role: "admin"`
 

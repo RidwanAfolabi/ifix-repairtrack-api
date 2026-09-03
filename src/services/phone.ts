@@ -74,3 +74,20 @@ export function normalizeMalaysianMobile(raw: unknown): PhoneResult {
 
   return { ok: true, normalized: digits };
 }
+
+/**
+ * Masks all but the first 4 and last 2 digits of a normalized number, e.g.
+ * "60123456789" -> "0123****89". For PUBLIC unauthenticated responses that
+ * echo a customer's own number back for confirmation (GET
+ * /api/warranty/:jobId) — full numbers still go to authenticated staff (GET
+ * /api/jobs/:jobId), who need them to actually act on it. Masking here
+ * server-side, not just in the frontend, matters because a raw API request
+ * bypasses any frontend masking entirely.
+ */
+export function maskWhatsapp(normalized: string): string {
+  if (!normalized) return "";
+  const local = normalized.startsWith("60") ? `0${normalized.slice(2)}` : normalized;
+  if (local.length <= 6) return local;
+  const stars = "*".repeat(local.length - 6);
+  return `${local.slice(0, 4)}${stars}${local.slice(-2)}`;
+}
